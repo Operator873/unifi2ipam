@@ -10,14 +10,17 @@ Finally, check function by executing `./unifi2ipam.py --help` to verify the scri
 Running the script without any options will attempt to sync changes to DHCP networks based on the mac address of the clients reported by UniFi. Using the `--nuke-and-pave` option will delete **ALL ADDRESSES** from **ALL SUBNETS** and then rebuild your IPAM with all the actively connected clients. ***Use with caution!!***
 ```
 $ ./unifi2ipam.py --help
-usage: unifi2ipam.py [-h] [--nuke-and-pave] [--limit LIMIT]
+usage: unifi2ipam.py [-h] [--nuke-and-pave] [--limit LIMIT] [--site-id SITE_ID] [--dryrun] [--version]
 
 Sync UniFi clients to phpIPAM.
 
-optional arguments:
-  -h, --help       show this help message and exit
-  --nuke-and-pave  Delete all addresses in IPAM before paving with UniFi clients.
-  --limit LIMIT    Limit the number of clients to process (default: 1000).
+options:
+  -h, --help         show this help message and exit
+  --nuke-and-pave    Delete all addresses in IPAM before paving with UniFi clients.
+  --limit LIMIT      Limit the number of clients to process (default: 1000).
+  --site-id SITE_ID  Specify a site ID to use for the UniFi API. If not provided, the script will prompt for site selection.
+  --dryrun           Perform a dry run without making any changes to phpIPAM. Useful for testing purposes.
+  --version          Show the version of the script.
   ```
 
   ## Configuration
@@ -30,7 +33,7 @@ optional arguments:
   You'll then click `Create API key` and specify an App id (`IPAM_APP_ID`) and you should copy the generated App code for your records. The script will look for this as an environmental variable `IPAM_API_KEY`. Finally, change the App security option to `SSL with App code token`.
 
   ## To Do Items
-  - Create a dryrun switch in argparse
+  - ~~Create a dryrun switch in argparse~~
   - Log the changes instead of stdout only
   - Output is currently noisy. Try and reduce the amount of text generated, but keep the information provided
 
