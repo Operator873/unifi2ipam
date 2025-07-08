@@ -4,7 +4,21 @@ A handy script to assist with transferring the client list from UniFi gateway to
 ## Installation
 Clone this repository, verify execution ability (`chmod +x unifi2pam.py`), copy the script to a location of your choosing (*it's best to not leave it in the repo since you'll be editing the script with your homelab's information and don't want to lose that with updates*), update the URL and App Id variables in the script, and set your environmental variables (`UNIFI_API_KEY` and `IPAM_API_KEY`).
 
-Finally, check function by executing `./unifi2ipam.py --help` to verify the script can execute. 
+Finally, check function by executing `./unifi2ipam.py --help` to verify the script can execute.
+
+As an optional step, create a link to use the script as a command. As a reminder, it's strongly encouraged to copy the script out of the repo vs editing the one in place to avoid inadvertantly losing configuration information.
+```
+$ sudo ln -s /path/to/your/unifi2ipam.py /usr/local/bin/unifi2ipam
+```
+
+## Updating
+To update the script, you should update the repo on your local machine, then cp the new version of the script to your deployment location. You'll need to update the URLs for your UniFi device as well as the App ID and URL of your phpIPAM deployment.
+```
+$ cd /path/to/repo
+$ git pull
+$ cp /path/to/repo/unifi2ipam.py /path/to/your/scripts/unifi2ipam.py
+$ vim /path/to/your/scripts/unifi2ipam.py
+```
 
 ## Usage
 Running the script without any options will attempt to sync changes to DHCP networks based on the mac address of the clients reported by UniFi. Using the `--nuke-and-pave` option will delete **ALL ADDRESSES** from **ALL SUBNETS** and then rebuild your IPAM with all the actively connected clients. ***Use with caution!!***
