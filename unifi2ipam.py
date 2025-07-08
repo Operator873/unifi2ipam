@@ -13,6 +13,7 @@
 # - IPAM_API_KEY: Your API key for the phpIPAM application.
 
 import argparse
+import json
 import os
 
 import requests
@@ -46,6 +47,7 @@ def xmit(service, endpoint, params=None, method="get") -> dict:
     Returns:
         dict: The JSON response from the API as a dictionary, or None on failure.
     """
+
     # Set the base URL and authentication headers based on the target service.
     if service == "unifi":
         # The modern UniFi API uses a Bearer token.
@@ -84,8 +86,9 @@ def xmit(service, endpoint, params=None, method="get") -> dict:
         return response.json()
 
     except requests.exceptions.HTTPError as errh:
-        print(f"Http Error: {errh}")
-        print(f"Response Body: {response.text}")
+        if 'search_mac' not in errh.response.url:
+            print(f"Http Error: {errh}")
+            print(f"Response Body: {response.text}")
     except AttributeError:
         print(f"Error: Invalid or unsupported HTTP method '{method}'")
     except requests.exceptions.RequestException as err:
@@ -164,26 +167,16 @@ def sync_phpipam_by_mac(ip, mac, hostname) -> None:
         f"phpIPAM: Found existing record for MAC {mac} (ID: {record_id}). Updating..."
     )
 
-    # Prepare payload with new IP and hostname from UniFi
-    update_payload = {
-        "ip": ip,
-        "hostname": hostname,
-        "note": "Updated by UniFi2IPAM",
-        "description": "",
-    }
-    update_response = xmit(
-        "ipam", f"addresses/{record_id}/", params=update_payload, method="patch"
-    )
+    # Since updating IP address isn't possible with phpIPAM, we delete the record and create a new one.
+    remove_ip = xmit("ipam", f"addresses/{record_id}/", method="delete")
 
-    if update_response.get("success"):
-        print(
-            f"phpIPAM: Successfully updated {record_id} with IP {ip} and hostname '{hostname}'."
-        )
-    else:
-        print(f"phpIPAM: Failed to update record {record_id}.")
+    if not remove_ip.get("success"):
+        print(f"phpIPAM: Failed to update (delete action) existing record {record_id}.")
+
+    create_new_address(ip, mac, hostname, payload=existing_record)
 
 
-def create_new_address(ip, mac, hostname) -> None:
+def create_new_address(ip, mac, hostname, payload=None) -> None:
     """
     Creates a new address record in phpIPAM. It first finds the most
     specific containing subnet for the given IP address.
@@ -192,7 +185,10 @@ def create_new_address(ip, mac, hostname) -> None:
         ip (str): The IP address for the new record.
         mac (str): The MAC address for the new record.
         hostname (str): The hostname for the new record.
+        payload (dict, optional): Additional parameters for the address creation.
+            Defaults to None, but can be used to pass extra data if needed.
     """
+
     # Step 1: Use the 'overlapping' endpoint to find the most specific subnet for the IP.
     # The '/32' indicates we are searching for a single host address.
     subnet_search_url = xmit("ipam", f"subnets/overlapping/{ip}/32")
@@ -202,36 +198,182 @@ def create_new_address(ip, mac, hostname) -> None:
         return
 
     subnet_id = subnet_search_url["data"][0]["id"]
-    print(f"phpIPAM: Found containing subnet ID: {subnet_id} for new IP {ip}.")
 
-    # Step 2: Create the new address with the found subnet ID.
-    create_payload = {
-        "ip": ip,
-        "subnetId": subnet_id,
-        "hostname": hostname,
-        "mac": mac,
-        "note": "Created by UniFi2IPAM",
-        "description": "",
-    }
+    # Step 2: Create or update the address with the found subnet ID.
+    if payload:
+        create_payload = {
+            "ip": ip,
+            "subnetId": subnet_id,
+            "mac": mac,
+            "note": f"{payload.get('note', '')} Updated by UniFi2IPAM",
+        }
 
+        # Only send the information back to phpIPAM that the API supports and we don't want changed.
+        for key, value in payload.items():
+            if key not in [
+                "id",
+                "subnetId",
+                "ip",
+                "mac",
+                "location",
+                "note",
+                "firewallAddressObject",
+                "editDate",
+                "customer_id",
+            ]:
+                create_payload[key] = value
+    else:
+        create_payload = {
+            "ip": ip,
+            "subnetId": subnet_id,
+            "hostname": hostname,
+            "mac": mac,
+            "note": "Created by UniFi2IPAM",
+            "description": "",
+        }
+
+    # Step 3: Send the request to create the address in phpIPAM.
     create_response = xmit("ipam", "addresses", params=create_payload, method="post")
 
     if create_response.get("success"):
-        print(f"phpIPAM: Successfully created new address for {ip} with MAC {mac}.")
+        print(f"phpIPAM: Successfully created address for {ip} with MAC {mac}.")
     else:
         print(
-            f"phpIPAM: Failed to create new address. Message: {create_response.get('message')}"
+            f"phpIPAM: Failed to create address. Message: {create_response.get('message')}"
         )
+
+
+def select_site_id(sites) -> str:
+    """
+    Prompts the user to select a site from the available sites in the UniFi API.
+    If the user does not make a valid choice, exit the script.
+
+    Args:
+        sites (dict): The JSON response from the UniFi API containing site data.
+
+    Returns:
+        str: The ID of the selected site.
+    """
+    # Select the correct site
+    counter = 0
+    print(f"===== Available sites =====")
+
+    for site in sites.get("data", []):
+        counter += 1
+        print(f"{counter} ---> Site Name: {site['name']}, ID: {site['id']}")
+
+    print(f"===========================\n")
+
+    choice = input(
+        f"Please select a site by number (1-{counter}) or press Enter to use the first site: "
+    )
+
+    if choice.isdigit() and 1 <= int(choice) <= counter:
+        site_id = sites["data"][int(choice) - 1]["id"]
+        return site_id
+    else:
+        print("No valid choice made. Exiting...")
+        exit(0)
+
+
+def get_unifi_clients(limit, site_arg=None) -> list:
+    """
+    Fetches the list of clients from the UniFi API, allowing for site selection if multiple sites are available.
+
+    Returns:
+        list: A list of client dictionaries retrieved from the UniFi API.
+    """
+
+    if site_arg:
+        # If a specific site ID is provided, use it directly.
+        print(f"Using specified site ID: {site_arg}")
+        client_list = xmit(
+            "unifi", f"sites/{site_arg}/clients", params={"limit": limit}
+        )
+    else:
+        # Fetch the available sites from the UniFi API.
+        print("Fetching sites from UniFi API...")
+        sites = xmit("unifi", "sites")
+
+        if not sites or len(sites.get("data")) == 0:
+            print("Error: No sites found or unable to retrieve site data.")
+            exit(1)
+
+        # If there are multiple sites, prompt the user to select one.
+        if len(sites.get("data")) > 1:
+            site_id = select_site_id(sites)
+            print(f"Using site ID: {site_id}")
+        else:
+            site_id = sites["data"][0]["id"]
+            print(f"Only one site found. Using site ID: {site_id}")
+
+        # Fetch all clients from the determined site.
+        print("Fetching clients from UniFi API...")
+        client_list = xmit("unifi", f"sites/{site_id}/clients", params={"limit": limit})
+
+    # Check if the client list was successfully retrieved.
+    if client_list and client_list.get("data"):
+        return client_list["data"]
+    else:
+        print("Error: No clients found or unable to retrieve client data.")
+        exit(1)
+
+
+def do_dry_run(args) -> None:
+    """
+    Perform a dry run of the script without making any changes to phpIPAM.
+    This is useful for testing the script's functionality without affecting the actual data.
+
+    Args:
+        args: The command-line arguments passed to the script.
+    """
+
+    print("Running in dry run mode. No changes will be made to phpIPAM.")
+    print("This is useful for testing the script without making actual changes.")
+
+    if args.nuke_and_pave:
+        print(
+            "Warning: Nuke and pave mode is enabled, but in dry run mode, no changes will be made."
+        )
+        print(
+            "This means that even if you specify --nuke-and-pave, it will not delete any addresses in phpIPAM."
+        )
+
+    clients = get_unifi_clients(args.limit, args.site_id)
+
+    print(f"Found {len(clients)} clients in UniFi.")
+    print("Processing clients in dry run mode...")
+
+    for client in clients:
+        if "ipAddress" in client and "macAddress" in client:
+            ip = client["ipAddress"]
+            mac = client["macAddress"]
+            hostname = client.get("name", "Unknown")
+            print(
+                f"DRY RUN: Would attempt to sync MAC {mac} (IP: {ip}, Hostname: {hostname})"
+            )
+        else:
+            print("ERROR! Client data is missing 'ipAddress' or 'macAddress' fields.")
+            print(json.dumps(client, indent=2))
+
+    print("Dry run completed. No changes made to phpIPAM.")
 
 
 def main(args):
+    """Main function to handle the script's execution flow based on command-line arguments."""
+
+    if args.dryrun:
+        do_dry_run(args)
+        return
+
     # If --nuke-and-pave is specified, ask for confirmation before proceeding.
     if args.nuke_and_pave:
+        print("====== WARNING! ======")
         print(
-            "Nuke and pave mode enabled. All existing addresses in phpIPAM will be deleted before syncing."
+            "Nuke and pave mode enabled. ALL existing addresses in phpIPAM will be deleted before syncing."
         )
         check = input(
-            "Are you sure you want to proceed? This will delete all existing addresses in phpIPAM. Type 'yes' to confirm: "
+            "Are you sure you want to proceed? This will delete ***ALL*** existing addresses in all subnets in phpIPAM. Type 'yes' to confirm: "
         )
         if check.lower() != "yes":
             print("Nuke and pave operation cancelled.")
@@ -243,26 +385,7 @@ def main(args):
             exit(1)
         print("Nuke operation completed successfully.")
 
-    # Fetch the first available site from the UniFi API.
-    sites = xmit("unifi", "sites")
-
-    if sites and sites.get("data"):
-        site_id = sites["data"][0]["id"]
-        print(f"Using site ID: {site_id}")
-    else:
-        print("Error: No sites found or unable to retrieve site data.")
-        exit(1)
-
-    # Fetch all clients from the determined site.
-    print("Fetching clients from UniFi API...")
-    client_list = xmit(
-        "unifi", f"sites/{site_id}/clients", params={"limit": args.limit}
-    )
-    if client_list and client_list.get("data"):
-        clients = client_list["data"]
-    else:
-        print("Error: No clients found or unable to retrieve client data.")
-        exit(1)
+    clients = get_unifi_clients(args.limit, args.site_id)
 
     print(f"Found {len(clients)} clients in UniFi.")
     print("Processing clients and adding to IPAM...")
@@ -275,7 +398,9 @@ def main(args):
             mac = client["macAddress"]
             hostname = client.get("name", "Unknown")
         else:
-            print("Client data is missing 'ip' or 'mac' fields. Skipping...")
+            print("ERROR! Client data is missing 'ipAddress' or 'macAddress' fields.")
+            print(json.dumps(client, indent=2))
+            print("Skipping...")
             continue
 
         # If we're nuking and paving, there's no need to attempt to sync.
@@ -285,6 +410,8 @@ def main(args):
         else:
             print(f"--- Syncing MAC {mac} (IP: {ip}) ---")
             sync_phpipam_by_mac(ip, mac, hostname)
+
+    # Final message indicating the sync process is complete.
     print("Sync completed.")
 
 
@@ -302,6 +429,24 @@ if __name__ == "__main__":
         default=1000,
         help="Limit the number of clients to process (default: 1000).",
     )
+    parser.add_argument(
+        "--site-id",
+        type=str,
+        default=None,
+        help="Specify a site ID to use for the UniFi API. If not provided, the script will prompt for site selection.",
+    )
+    parser.add_argument(
+        "--dryrun",
+        action="store_true",
+        default=False,
+        help="Perform a dry run without making any changes to phpIPAM. Useful for testing purposes.",
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version="unifi2ipam v1.0.1",
+        help="Show the version of the script.",
+    )
     args = parser.parse_args()
 
     # --- Pre-flight Checks for required API keys ---
@@ -318,9 +463,11 @@ if __name__ == "__main__":
         exit(1)
 
     for g in [UNIFI_URL, IPAM_URL, IPAM_APP_ID]:
-        if 'example' in g:
-            print(f"Error: The IPAM_URL, UNIFI_URL, or APP_ID contains 'example'. Please update it to your actual values.")
+        if "example" in g:
+            print(
+                f"Error: The IPAM_URL, UNIFI_URL, or APP_ID contains 'example'. Please update it to your actual values."
+            )
             exit(1)
-    
+
     main(args)
     # --- End of script ---
