@@ -457,9 +457,9 @@ if __name__ == "__main__":
         exit(1)
 
     if not IPAM_KEY:
-        print("Error: The PHPIPAM_API_KEY environment variable is not set.")
+        print("Error: The IPAM_API_KEY environment variable is not set.")
         print("Please set it before running the script, for example:")
-        print("export PHPIPAM_API_KEY='your_phpipam_api_key_here'")
+        print("export IPAM_API_KEY='your_IPAM_API_KEY_here'")
         exit(1)
 
     for g in [UNIFI_URL, IPAM_URL, IPAM_APP_ID]:
