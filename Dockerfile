@@ -2,7 +2,7 @@ FROM ghcr.io/astral-sh/uv:python3.12-alpine AS deps
 
 WORKDIR /app
 COPY pyproject.toml uv.lock ./
-RUN uv sync --frozen --no-dev --no-install-project
+RUN UV_LINK_MODE=copy uv sync --frozen --no-dev --no-install-project
 
 FROM python:3.12-alpine
 

@@ -174,6 +174,107 @@ Find your site ID with `uv run unifi2ipam.py --dryrun` first.
 
 ---
 
+## Container Deployment
+
+Pre-built images are published to the GitHub Container Registry on every push to `main` and on version tags:
+
+```text
+ghcr.io/adamherbert/unifi2ipam:main      # latest from main
+ghcr.io/adamherbert/unifi2ipam:1.0.1     # specific version
+```
+
+### Docker
+
+Pass credentials as environment variables and mount your `config.yaml`:
+
+```bash
+docker run --rm \
+  -e UNIFI_API_KEY=your_unifi_key \
+  -e IPAM_API_KEY=your_ipam_key \
+  -v /path/to/config.yaml:/etc/unifi2ipam/config.yaml:ro \
+  ghcr.io/adamherbert/unifi2ipam:main \
+  --site-id <site-id> --quiet
+```
+
+### Kubernetes CronJob
+
+Create a `Secret` for credentials and a `ConfigMap` for the config file, then deploy as a `CronJob`:
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: unifi2ipam-secrets
+  namespace: unifi2ipam
+type: Opaque
+stringData:
+  UNIFI_API_KEY: "your_unifi_api_key"
+  IPAM_API_KEY: "your_ipam_api_key"
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: unifi2ipam-config
+  namespace: unifi2ipam
+data:
+  config.yaml: |
+    unifi:
+      url: "https://unifi.local/proxy/network/integration/v1/"
+    ipam:
+      base_url: "https://ipam.local"
+      app_id: "your_app_id"
+    # insecure: true
+---
+apiVersion: batch/v1
+kind: CronJob
+metadata:
+  name: unifi2ipam
+  namespace: unifi2ipam
+spec:
+  schedule: "0 * * * *"          # every hour
+  concurrencyPolicy: Forbid
+  jobTemplate:
+    spec:
+      template:
+        spec:
+          restartPolicy: OnFailure
+          containers:
+            - name: unifi2ipam
+              image: ghcr.io/adamherbert/unifi2ipam:main
+              args: ["--site-id", "<site-id>", "--quiet"]
+              env:
+                - name: UNIFI_API_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: unifi2ipam-secrets
+                      key: UNIFI_API_KEY
+                - name: IPAM_API_KEY
+                  valueFrom:
+                    secretKeyRef:
+                      name: unifi2ipam-secrets
+                      key: IPAM_API_KEY
+              volumeMounts:
+                - name: config
+                  mountPath: /etc/unifi2ipam
+                  readOnly: true
+          volumes:
+            - name: config
+              configMap:
+                name: unifi2ipam-config
+```
+
+Find your site ID first using a dry run (replace image pull with your actual values):
+
+```bash
+docker run --rm \
+  -e UNIFI_API_KEY=your_key \
+  -e IPAM_API_KEY=your_key \
+  -v /path/to/config.yaml:/etc/unifi2ipam/config.yaml:ro \
+  ghcr.io/adamherbert/unifi2ipam:main --dryrun
+```
+
+---
+
 ## Notes
 
 - SSL certificate verification is **enabled by default**. Use `--insecure` (or `insecure: true` in the config file) for self-signed certificates.
