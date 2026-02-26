@@ -1,0 +1,16 @@
+[project]
+name = "unifi2ipam"
+version = "1.0.1"
+description = "Synchronize UniFi Network Controller client data to phpIPAM"
+requires-python = ">=3.10"
+dependencies = [
+    "requests>=2.32",
+    "urllib3>=2.0",
+    "pyyaml>=6.0",
+]
+
+[project.scripts]
+unifi2ipam = "unifi2ipam:main"
+
+[tool.uv]
+package = false

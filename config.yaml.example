@@ -1,0 +1,41 @@
+unifi:
+  # Base URL for the UniFi Network Controller API.
+  # Typically: https://<controller-ip>/proxy/network/integration/v1/
+  url: "https://unifi.local/proxy/network/integration/v1/"
+
+  # API key generated in the UniFi dashboard.
+  # Settings → Control Plane → Integrations → Create API Key
+  # Recommended: use the UNIFI_API_KEY environment variable instead.
+  # api_key: "your_unifi_api_key_here"
+
+ipam:
+  # Base URL of your phpIPAM instance (no trailing slash).
+  base_url: "https://ipam.local"
+
+  # Application ID created in phpIPAM.
+  # Administration → API → Create API key
+  app_id: "your_app_id"
+
+  # App code (token) generated alongside the App ID.
+  # Recommended: use the IPAM_API_KEY environment variable instead.
+  # api_key: "your_ipam_api_key_here"
+
+# Disable SSL certificate verification.
+# Set to true only if your UniFi or phpIPAM instance uses a self-signed certificate.
+# Can also be enabled at runtime with the --insecure flag.
+# insecure: false
+
+# Subnet filtering — include and exclude are mutually exclusive.
+# subnets:
+
+  # Include list: only sync clients whose IP falls within one of these subnets.
+  # Useful when you only want to manage specific VLANs or address ranges in phpIPAM.
+  # include:
+  #   - 192.168.1.0/24
+  #   - 10.10.0.0/16
+
+  # Exclude list: skip clients whose IP falls within any of these subnets.
+  # Useful for ignoring management networks, IoT VLANs, etc.
+  # exclude:
+  #   - 192.168.100.0/24
+  #   - 172.16.0.0/12

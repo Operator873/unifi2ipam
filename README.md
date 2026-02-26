@@ -1,57 +1,192 @@
 # unifi2ipam
-A handy script to assist with transferring the client list from UniFi gateway to phpIPAM. This script depends on API interactivity between the script and both the UniFi gateway and your phpIPAM installation. This will allow the clients visible to UniFi to be added to phpIPAM programmatically vs manually or by other means. Users can manually execute the script or configure it as a cron job.
+
+Synchronizes network client data from a UniFi Network Controller to a [phpIPAM](https://phpipam.net/) instance. The script reads all active clients from a UniFi site and creates or updates their address records in phpIPAM, using the MAC address as the stable identifier across IP changes.
+
+> **Warning:** This script makes destructive changes to phpIPAM. The `--nuke-and-pave` mode in particular will delete **all address records in all subnets** before rebuilding from UniFi data. Use with caution. ***No warranty is provided.***
+
+---
+
+## How It Works
+
+### Sync Mode (default)
+
+For each client reported by UniFi that has both an IP and MAC address:
+
+1. phpIPAM is searched for an existing record with that MAC address.
+2. **If not found:** a new address record is created. The script first identifies the most specific subnet in phpIPAM that contains the client's IP (using the `subnets/overlapping` endpoint), then `POST`s the new record into that subnet.
+3. **If found and the IP matches:** no change is made.
+4. **If found and the IP has changed:** the new record is created first, then the old one is deleted only after the new one is confirmed. This avoids a window where no record exists if the create step fails. Custom fields (hostname, description, owner, etc.) are preserved from the original record.
+
+> phpIPAM does not support changing the IP address of an existing record, so IP changes are handled as a create-then-delete.
+
+### Nuke and Pave Mode (`--nuke-and-pave`)
+
+A full rebuild intended for initial setup or disaster recovery:
+
+1. Prompts for interactive confirmation before making any changes.
+2. Fetches all subnets from phpIPAM and calls the `truncate` endpoint on each one, deleting every address record.
+3. Creates fresh records for all UniFi clients in parallel.
+
+### Dry Run Mode (`--dryrun`)
+
+Connects to UniFi and lists all clients that *would* be synced, without touching phpIPAM. Useful for verifying connectivity and reviewing what the script will do before the first live run.
+
+---
+
+## Prerequisites
+
+- Python 3.10 or later
+- [uv](https://docs.astral.sh/uv/) for dependency management
+- A UniFi Network Controller with API access enabled
+- A phpIPAM instance with an API application configured
+
+---
 
 ## Installation
-Clone this repository, verify execution ability (`chmod +x unifi2pam.py`), copy the script to a location of your choosing (*it's best to not leave it in the repo since you'll be editing the script with your homelab's information and don't want to lose that with updates*), update the URL and App Id variables in the script, and set your environmental variables (`UNIFI_API_KEY` and `IPAM_API_KEY`).
 
-Finally, check function by executing `./unifi2ipam.py --help` to verify the script can execute.
-
-As an optional step, create a link to use the script as a command. As a reminder, it's strongly encouraged to copy the script out of the repo vs editing the one in place to avoid inadvertantly losing configuration information.
-```
-$ sudo ln -s /path/to/your/unifi2ipam.py /usr/local/bin/unifi2ipam
+```bash
+git clone https://github.com/<you>/unifi2ipam.git
+cd unifi2ipam
+uv sync
 ```
 
-## Updating
-To update the script, you should update the repo on your local machine, then cp the new version of the script to your deployment location. You'll need to update the URLs for your UniFi device as well as the App ID and URL of your phpIPAM deployment.
+---
+
+## Configuration
+
+Configuration is loaded from three sources in order of increasing precedence:
+
+```text
+config file  →  environment variables  →  CLI flags
 ```
-$ cd /path/to/repo
-$ git pull
-$ cp /path/to/repo/unifi2ipam.py /path/to/your/scripts/unifi2ipam.py
-$ vim /path/to/your/scripts/unifi2ipam.py
+
+### Config file (recommended)
+
+Default location: `/etc/unifi2ipam/config.yaml`
+Override with: `--config PATH`
+
+```yaml
+unifi:
+  url: "https://unifi.local/proxy/network/integration/v1/"
+  # api_key: "..."  # use UNIFI_API_KEY env var instead
+
+ipam:
+  base_url: "https://ipam.local"
+  app_id: "your_app_id"
+  # api_key: "..."  # use IPAM_API_KEY env var instead
+
+# insecure: true  # uncomment to disable SSL certificate verification
 ```
+
+### Environment variables
+
+| Variable | Required | Description |
+| --- | --- | --- |
+| `UNIFI_API_KEY` | Yes | UniFi API key |
+| `IPAM_API_KEY` | Yes | phpIPAM application token |
+| `UNIFI_URL` | No* | UniFi controller base URL |
+| `IPAM_BASE_URL` | No* | phpIPAM host URL |
+| `IPAM_APP_ID` | No* | phpIPAM application ID |
+
+*Required if not set in config file or via CLI flags.
+
+### CLI flags
+
+| Flag | Description |
+| --- | --- |
+| `--unifi-url URL` | UniFi controller base URL |
+| `--ipam-base-url URL` | phpIPAM base URL |
+| `--ipam-app-id ID` | phpIPAM application ID |
+| `--insecure` | Disable SSL certificate verification (opt-in, for self-signed certs) |
+| `--config PATH` | Path to YAML config file |
+
+---
+
+### Generating a UniFi API Key
+
+Log in to the UniFi dashboard with a sufficiently privileged account and go to **Settings → Control Plane → Integrations**. Click **Create API Key**, give it a name, set an optional expiry, and copy the key. Use this as `UNIFI_API_KEY`.
+
+The UniFi API endpoint is typically: `https://<controller-ip>/proxy/network/integration/v1/`
+
+### Generating a phpIPAM API Token
+
+Log in as an Administrator and go to **Administration → API → Create API key**. Set an App ID (this becomes `IPAM_APP_ID`), copy the generated App code, and set the security mode to **SSL with App code token**. Use the App code as `IPAM_API_KEY`.
+
+---
 
 ## Usage
-Running the script without any options will attempt to sync changes to DHCP networks based on the mac address of the clients reported by UniFi. Using the `--nuke-and-pave` option will delete **ALL ADDRESSES** from **ALL SUBNETS** and then rebuild your IPAM with all the actively connected clients. ***Use with caution!!***
+
+```bash
+# Verify connectivity and preview what would be synced (no changes made)
+uv run unifi2ipam.py --dryrun
+
+# Standard incremental sync
+uv run unifi2ipam.py
+
+# Use self-signed certificates
+uv run unifi2ipam.py --insecure
+
+# Specify a site directly (skips the interactive site-selection prompt)
+uv run unifi2ipam.py --site-id <site-id>
+
+# Full rebuild — deletes all phpIPAM addresses before re-creating from UniFi
+uv run unifi2ipam.py --nuke-and-pave
+
+# Verbose output (shows each API request)
+uv run unifi2ipam.py --dryrun --verbose
+
+# Quiet mode (errors only) with log file
+uv run unifi2ipam.py --quiet --log-file /var/log/unifi2ipam.log
 ```
-$ ./unifi2ipam.py --help
-usage: unifi2ipam.py [-h] [--nuke-and-pave] [--limit LIMIT] [--site-id SITE_ID] [--dryrun] [--version]
 
-Sync UniFi clients to phpIPAM.
+Full option reference (`uv run unifi2ipam.py --help`):
 
+```text
 options:
-  -h, --help         show this help message and exit
-  --nuke-and-pave    Delete all addresses in IPAM before paving with UniFi clients.
-  --limit LIMIT      Limit the number of clients to process (default: 1000).
-  --site-id SITE_ID  Specify a site ID to use for the UniFi API. If not provided, the script will prompt for site selection.
-  --dryrun           Perform a dry run without making any changes to phpIPAM. Useful for testing purposes.
-  --version          Show the version of the script.
-  ```
+  --nuke-and-pave      Delete all addresses in IPAM before paving with UniFi clients.
+  --limit LIMIT        Maximum number of clients to fetch from UniFi (default: 1000).
+  --site-id ID         UniFi site ID. If omitted, available sites are listed for selection.
+  --dryrun             Preview what would be synced without touching phpIPAM.
+  --workers WORKERS    Parallel workers for client processing (default: 4).
+  --config PATH        Path to YAML config file.
+  --unifi-url URL      UniFi controller base URL.
+  --ipam-base-url URL  phpIPAM base URL.
+  --ipam-app-id ID     phpIPAM application ID.
+  --insecure           Disable SSL certificate verification.
+  --verbose            Enable debug-level output.
+  --quiet              Suppress all output except errors.
+  --log-file PATH      Write logs to file in addition to stdout.
+  --version            Show version and exit.
+```
 
-  ## Configuration
-  ### UniFi
-  UniFi devices have an API available for use typically at `https://.../proxy/network/integration/v1/` which will need to be added to the script in the Configuration section (`UNIFI_URL`). You'll need to generate an API key within the UniFi dashboard by logging in with a sufficiently privileged account, and going to `Settings > Control Plane > Integrations`. Then add an API Key by giving it a name, setting an optional expiration date, and clicking `Create API Key`. Copy the generated API Key for your records. The script will look for this as an environmental variable `UNIFI_API_KEY`.
+---
 
-  ### phpIPAM
-  phpIPAM requires an API token to be created for a specific App. Think of it as a username/password for your scripts or other applications. Create an API key by logging into your phpIPAM interface as an Administrator and clicking `Administration > API`.  
-  
-  You'll then click `Create API key` and specify an App id (`IPAM_APP_ID`) and you should copy the generated App code for your records. The script will look for this as an environmental variable `IPAM_API_KEY`. Finally, change the App security option to `SSL with App code token`.
+## Cron Job Setup
 
-  ## To Do Items
-  - ~~Create a dryrun switch in argparse~~
-  - Log the changes instead of stdout only
-  - Output is currently noisy. Try and reduce the amount of text generated, but keep the information provided
+For automated periodic syncs, add an entry to your crontab. Use `--site-id` to avoid the interactive site-selection prompt and `--quiet` to limit output to errors only:
 
-  ## Problems
-  Please create a Github Issue and I will attempt to address the issues as time permits. This script is provided without warranty or promise and you should understand it makes **destructive** changes that are not recoverable.  
+```cron
+# Sync UniFi clients to phpIPAM every hour
+0 * * * * UNIFI_API_KEY=your_key IPAM_API_KEY=your_key /path/to/uv run /path/to/unifi2ipam/unifi2ipam.py --site-id <site-id> --quiet --log-file /var/log/unifi2ipam.log 2>&1
+```
 
-  ***Use at your own risk.***
+Find your site ID with `uv run unifi2ipam.py --dryrun` first.
+
+---
+
+## Notes
+
+- SSL certificate verification is **enabled by default**. Use `--insecure` (or `insecure: true` in the config file) for self-signed certificates.
+- Only clients with both `ipAddress` and `macAddress` fields populated are processed. Clients without a DHCP lease are skipped.
+- Subnets must already exist in phpIPAM. The script will not create subnets — if no matching subnet is found for a client's IP, that client is skipped with an error message.
+- Client processing is parallelised using a thread pool (`--workers`, default 4). `nuke_ipam_addresses` runs sequentially.
+
+---
+
+## To Do
+
+- [ ] Log output to a file rather than stdout only *(use `--log-file` as a workaround)*
+
+## Problems
+
+Please open a [GitHub Issue](../../issues) and it will be addressed as time permits.
